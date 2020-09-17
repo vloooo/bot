@@ -1,127 +1,160 @@
-import telebot
+import os
+
 from telebot import types
 
-tb = telebot.TeleBot('1393369006:AAGMXXQ01qwn3PqfwOfq9edp607Sah_xq6o')
-LUDA_ID = ''
+from calendar_utils import CalendarWithBlackDates
+from const import tb, common_scripts, LUDA_ID, pm_map, current_date, next_year, PHOTO_DIR
+from utils import send_photo, simple_callback
+from db_actions import Session, Customer, Procedure, Order, get_or_create, Photo
+from datetime import datetime
+from callback import CallbackDataFactory
 
-@tb.message_handler(commands=['start', 'help'])
-def command_help(message):
-    # markup = types.ReplyKeyboardMarkup(row_width=2)
-    # itembtn1 = types.KeyboardButton('a')
-    # itembtn2 = types.KeyboardButton('v')
-    # itembtn3 = types.KeyboardButton('d')
-    # markup.add(itembtn1, itembtn2, itembtn3)
-    # tb.send_message(message.from_user.id, "Choose one letter:", reply_markup=markup)
 
-    # or add KeyboardButton one row at a time:
-
-    markup2 = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    get_contact = types.KeyboardButton("Oтправить контакт", request_contact=True)
-    markup2.row(get_contact)
-
-    # markup.row(photos)
-    # markup.row(assign)
-
-    photo = open('C:\\Users\\vladm\\PycharmProjects\\ludmila_pigmenta_bot\\photos\\kote.jpg', 'rb')
+@tb.message_handler(commands=['start'])
+def command_start(message):
     tb.send_message(message.from_user.id, "Добрый день, меня зовут Людмила Овсяникова. \n")
-    tb.send_photo(message.from_user.id, photo)
+    send_photo('kote.jpg', message)
     tb.send_message(message.from_user.id, "я занимаюсь професиональным увеличением губ и прочим. \n"
-                                          "с помощью данного бота вы можете ознакомиться с предоставляемвми услугами и записаться на продцедуру.\n"
+                                          "с помощью данного бота вы можете ознакомиться с предоставляемвми услугами "
+                                          "и записаться на продцедуру.\n"
                                           "мои работы вы можете посмотреть в истаграмме, \n"
                                           "тел. 9379992")
-    tb.send_message(message.from_user.id, "пожалуйста, отправьте ваш контакт", reply_markup=markup2)
-
-    # tb.reply_to(message, "Hello, did someone call for help?")
+    simple_callback(common_scripts['get_contact'], message)
 
 
 @tb.message_handler(content_types=['contact'])
 def handle_contact(message):
-    print(message.contact)
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    p_m = types.KeyboardButton('Перманентный макияж')
-    push_lips = types.KeyboardButton('Увеличение губ')
-    mezo_therapy = types.KeyboardButton('Мезотерапия головы')
-    botex = types.KeyboardButton('Ботекс')
-    assign = types.KeyboardButton('Хочу записаться на продцедуру')
-    photos = types.KeyboardButton('Фото работ')
-    markup.row(push_lips, p_m)
-    markup.row(botex, mezo_therapy)
-    tb.send_message(message.from_user.id, "Выбирите продцедуру:", reply_markup=markup)
+    session = Session()
+    get_or_create(session,
+                  Customer,
+                  id=message.from_user.id,
+                  first_name=message.from_user.first_name,
+                  last_name=message.from_user.last_name,
+                  phone=message.contact.phone_number)
+    session.close()
+
+    simple_callback(common_scripts['choose_procedure'], message)
 
 
 def handle_callback(message):
-    print(message)
-    if message.data == "lips_yes" or message.data == "lips_no":
-        print("zapisal")
-        markup = types.InlineKeyboardMarkup()
-        yes = types.InlineKeyboardButton('da', callback_data='ledocoin_yes')
-        no = types.InlineKeyboardButton('net', callback_data='ledocoin_no')
-        markup.row(yes, no)
+    data = CallbackDataFactory(message.data)
+    for script in common_scripts.values():
+        if script.prev_callback and script.prev_callback in data.last_item['key']:
+            session = Session()
+            customer = session.query(Customer).filter_by(id=message.from_user.id).first()
+            setattr(customer, data.last_item['key'], data.last_item['value'])
+            session.commit()
+            session.close()
 
-        tb.send_message(message.from_user.id, "у вас есть алергия на ледокоин?", reply_markup=markup)
-
-    if "ledocoin" in message.data:
-        print("zapisal")
-        markup = types.InlineKeyboardMarkup()
-        yes = types.InlineKeyboardButton('often', callback_data='herpes_yes')
-        no = types.InlineKeyboardButton('rarely', callback_data='herpes_no')
-        markup.row(yes, no)
-
-        tb.send_message(message.from_user.id, "часто ли высыпает герпес на губах?", reply_markup=markup)
+            simple_callback(script, message)
+            break
 
     if "herpes" in message.data:
-        tb.send_message(message.from_user.id, "для дальнейшей работы, я бы хотела получить фото ваших губ в 3-х ракурсах. пример фотографий ниже")
-        photo = open('C:\\Users\\vladm\\PycharmProjects\\ludmila_pigmenta_bot\\photos\\kote.jpg', 'rb')
-        tb.send_photo(message.from_user.id, photo)
+        session = Session()
+        send_photo('kote.jpg', message)
+        get_or_create(session,
+                      Order,
+                      customer_id=message.from_user.id,
+                      procedure_id=session.query(Procedure).filter_by(command=data.data['type']).first().id)
+        session.close()
 
-    if "call_in_hour" in message.data:
+
+    elif "pm_menu" in message.data:
+        tb.send_message(message.from_user.id,
+                        f"длинное описание продцедуры Перманентный макияж {message.data[3:]}: \n"
+                        "для дальнейшего продолжения работы мне нужно задать вам пару вопросов",
+                        reply_markup=types.ReplyKeyboardRemove())
+        extra_callback = f"pm_{pm_map[data.data['pm_menu']]}"
+        simple_callback(common_scripts['start_questions'], message, extra_callback=extra_callback)
+
+    elif "call_in_hour" in message.data:
         tb.send_message(LUDA_ID, "позвонить клиенту tel. " + 'user.tel')
 
-    if "assign" in message.data:
-        tb.send_message(message.from_user.id, "выберите дату для записи")
+    elif "assign" in message.data:
+        simple_callback(common_scripts['calendar'], message)
+
+    elif "time" in message.data:
+        session = Session()
+        order = get_or_create(session, Order, customer_id=message.from_user.id)
+        order.datetime = datetime.strptime(f"{data.data['date']} {data.data['time']}", '%Y-%m-%d %H:%M')
+        session.commit()
+        session.close()
+
+        tb.send_message(message.from_user.id, f"я записала вас. {data.data['date']} {data.data['time']}")
 
 
-@tb.message_handler(content_types=['photo'])
-def handle_contact(message):
-    print('polozil_BD')
-    markup = types.InlineKeyboardMarkup()
-    yes = types.InlineKeyboardButton('связаться в течение часа', callback_data='call_in_hour')
-    no = types.InlineKeyboardButton('записаться', callback_data='assign')
-    markup.row(yes, no)
-    tb.send_message(message.from_user.id,
-                    "ниже представлены цены за процедуру в зависимосте от препарата. \n"
-                    "цены ..........", reply_markup=markup)
+@tb.message_handler(content_types=['photo', 'document'])
+def handle_photo(message):
+    session = Session()
+    if message.content_type == 'photo':
+        file_id = message.photo[-1].file_id
+    else:
+        file_id = message.document.file_id
+
+    downloaded_file = tb.download_file(tb.get_file(file_id).file_path)
+    customer = session.query(Customer).filter_by(id=message.from_user.id).first()
+
+    customer_folder = f"{customer.id}_{customer.first_name}_{customer.last_name}/"
+    photos_amount = len(customer.photos)
+    photo_path = f"{PHOTO_DIR}{customer_folder}{photos_amount}.jpg"
+    os.makedirs(os.path.dirname(photo_path), exist_ok=True)
+
+    with open(photo_path, 'wb') as new_file:
+        new_file.write(downloaded_file)
+    session.add(Photo(customer_id=customer.id, path=photo_path))
+    session.commit()
+
+    # photos_amount = len(customer.photos)
+    session.close()
+
+    # if photos_amount < 3:
+    #     tb.send_message(message.from_user.id, f"Пожалуйста, прешлите ещё {3-photos_amount} фото")
+    # else:
+    simple_callback(common_scripts['to_assign'], message)
+
+
+@tb.callback_query_handler(func=CalendarWithBlackDates.func())
+def handle_calendar(c):
+    result, key, step = CalendarWithBlackDates(locale='ru',
+                                               min_date=current_date,
+                                               max_date=next_year).process(c.data)
+    if not result and key:
+        tb.edit_message_text("Выберите день",
+                             c.message.chat.id,
+                             c.message.message_id,
+                             reply_markup=key)
+    elif result:
+        markup = CalendarWithBlackDates().build_time(result)
+        tb.edit_message_text(f"Вы берите удобное для вас время {result}",
+                             c.message.chat.id,
+                             c.message.message_id,
+                             reply_markup=markup)
 
 
 @tb.callback_query_handler(func=handle_callback)
-@tb.message_handler(content_types=['text', 'update'])
-def handle_contact(message):
-    print(message)
+@tb.message_handler(content_types=['text'])
+def handle_text(message):
     if message.text == "Увеличение губ":
-        markup = types.InlineKeyboardMarkup()
-        markup2 = types.ReplyKeyboardMarkup()
-        yes = types.InlineKeyboardButton('da', callback_data='lips_yes')
-        no = types.InlineKeyboardButton('net', callback_data='lips_no')
-        call = types.InlineKeyboardButton('заказать звонок для консультации специалиста', callback_data='callback')
-        markup.row(yes, no)
-        markup2.row(call)
+        simple_callback(common_scripts['push_lips_desc'], message)
+        simple_callback(common_scripts['start_questions'], message, extra_callback='push_lips')
 
-        tb.send_message(message.from_user.id, "длинное описание продцедуры увеличения губ: \n"
-                                              "для дальнейшего продолжения работы мне нужно задать вам пару вопросов")
-        tb.send_message(message.from_user.id, "увеличевали ли вы убы ранее?", reply_markup=markup)
-        # tb.send_message(message.from_user.id, "", reply_markup=markup2)
+    elif message.text == 'Перманентный макияж':
+        simple_callback(common_scripts['get_pm_type'], message)
 
+    elif message.text == 'Ботекс':
+        simple_callback(common_scripts['botex_desc'], message)
+        simple_callback(common_scripts['start_questions'], message, extra_callback='botex')
 
-        # tb.send_poll(message.from_user.id,
-        #              question="выберите препарат",
-        #              options=[
-        #                  "препарат1",
-        #                  "препарат2",
-        #                  "препарат3",
-        #                  "препарат4",
-        #              ])
+    elif message.text == 'Мезотерапия головы':
+        simple_callback(common_scripts['mezo_head_desc'], message)
+        simple_callback(common_scripts['start_questions'], message, extra_callback='mezo_head')
+
+    elif message.text == 'Выбор продцедуры':
+        simple_callback(common_scripts['choose_procedure'], message)
+
     else:
-        tb.send_message(message.from_user.id, "Я тебя не понимаю. Напиши /help.")
+        simple_callback(common_scripts['undetected'], message)
 
 
-tb.polling(none_stop=True, interval=0)
+if __name__ == '__main__':
+    tb.polling(none_stop=True, interval=0)
